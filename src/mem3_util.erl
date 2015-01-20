@@ -14,7 +14,7 @@
 
 -export([hash/1, name_shard/2, create_partition_map/5, build_shards/2,
     n_val/2, to_atom/1, to_integer/1, write_db_doc/1, delete_db_doc/1,
-    shard_info/1, ensure_exists/1, open_db_doc/1]).
+    shard_info/1, ensure_exists/1, open_db_doc/1, db_doc_id/1]).
 -export([is_deleted/1, rotate_list/2]).
 
 %% do not use outside mem3.
@@ -76,9 +76,22 @@ attach_nodes(Shards, Acc, [], UsedNodes) ->
 attach_nodes([S | Rest], Acc, [Node | Nodes], UsedNodes) ->
     attach_nodes(Rest, [S#shard{node=Node} | Acc], Nodes, [Node | UsedNodes]).
 
-open_db_doc(DocId) ->
-    DbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
-    {ok, Db} = couch_db:open(DbName, []),
+db_doc_id(<<"_", _/binary>>=DocId) ->
+    case DocId of
+    <<"_users">> ->
+        <<"mem3/_users">>;
+    <<"_replicator">> ->
+        <<"mem3/_replicator">>;
+    _Else ->
+        throw({error, <<"Illegal shard map ID">>})
+    end;
+db_doc_id(DocId) ->
+    DocId.
+
+open_db_doc(DbName) ->
+    DocId = db_doc_id(DbName),
+    ShardDbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
+    {ok, Db} = couch_db:open(ShardDbName, []),
     try couch_db:open_doc(Db, DocId, [ejson_body]) after couch_db:close(Db) end.
 
 write_db_doc(Doc) ->
@@ -106,13 +119,14 @@ write_db_doc(DbName, #doc{id=Id, body=Body} = Doc, ShouldMutate) ->
         couch_db:close(Db)
     end.
 
-delete_db_doc(DocId) ->
+delete_db_doc(DbName) ->
+    DocId = db_doc_id(DbName),
     gen_server:cast(mem3_shards, {cache_remove, DocId}),
-    DbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
-    delete_db_doc(DbName, DocId, true).
+    ShardDbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
+    delete_db_doc(ShardDbName, DocId, true).
 
-delete_db_doc(DbName, DocId, ShouldMutate) ->
-    {ok, Db} = couch_db:open(DbName, []),
+delete_db_doc(ShardDbName, DocId, ShouldMutate) ->
+    {ok, Db} = couch_db:open(ShardDbName, []),
     {ok, Revs} = couch_db:open_doc_revs(Db, DocId, all, []),
     try [Doc#doc{deleted=true} || {ok, #doc{deleted=false}=Doc} <- Revs] of
     [] ->
@@ -123,7 +137,7 @@ delete_db_doc(DbName, DocId, ShouldMutate) ->
             ok
         catch conflict ->
             % check to see if this was a replication race or if leafs survived
-            delete_db_doc(DbName, DocId, false)
+            delete_db_doc(ShardDbName, DocId, false)
         end;
     _ ->
         % we have live leafs that we aren't allowed to delete. let's bail

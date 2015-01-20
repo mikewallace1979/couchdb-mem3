@@ -272,7 +272,8 @@ load_shards_from_disk(DbName) when is_binary(DbName) ->
     end.
 
 load_shards_from_db(#db{} = ShardDb, DbName) ->
-    case couch_db:open_doc(ShardDb, DbName, [ejson_body]) of
+    DocId = mem3_util:db_doc_id(DbName),
+    case couch_db:open_doc(ShardDb, DocId, [ejson_body]) of
     {ok, #doc{body = {Props}}} ->
         Shards = mem3_util:build_ordered_shards(DbName, Props),
         gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
